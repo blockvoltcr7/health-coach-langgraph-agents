@@ -8,8 +8,6 @@ The API is available under `/api/v1` and provides endpoints for:
 * `/health`: A health check endpoint that returns a success message if the API is running.
 * `/hello`: An example endpoint that returns a greeting message.
 
-This application now includes OAuth2 security with JWT.
-
 To run this application:
 
 1. Ensure you are in the root directory of the project.
@@ -24,7 +22,7 @@ import uvicorn
 app = FastAPI(
     title="GenAI API",
     version="1.0.0",
-    description="A simple API for GenAI with OAuth2 Bearer Token security",
+    description="A simple API for GenAI providing basic health check and hello world endpoints",
     docs_url="/docs",
     redoc_url="/redoc",
 )
