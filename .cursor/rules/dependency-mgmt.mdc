@@ -15,17 +15,18 @@ This document outlines requirements for managing Python dependencies in this pro
 
 ## Package Installation
 
-- Use `uv pip add <package>` for installing individual packages.
+- Use `uv add <package>` for installing individual packages.
 - Always update requirements.in after adding new dependencies.
-- Use `uv pip compile requirements.in` to generate/update requirements.txt.
+- Use `uv compile requirements.in` to generate/update requirements.txt.
 - Use `uv sync` to synchronize the environment with `requirements.txt`.
 
 ```bash
 # CORRECT
-uv pip add allure-pytest
+uv add allure-pytest
 
 # INCORRECT
 pip install allure-pytest
+uv pip add pytest
 ```
 
 ## Virtual Environment Management
@@ -94,21 +95,21 @@ When managing dependencies, AI assistants should:
 
 ```bash
 # Installing packages
-uv pip add <package>
+uv add <package>
 
 # Installing all packages from requirements.txt
-uv pip add -r requirements.txt
+uv add -r requirements.txt
 
 # Adding a package to requirements.in and updating requirements.txt
-uv pip add <package>
+uv add <package>
 # Then manually add to requirements.in
-uv pip compile requirements.in
+uv compile requirements.in
 # Updating all dependencies
-uv pip compile --upgrade-package "*" requirements.in
+uv compile --upgrade-package "*" requirements.in
 
 # Synchronizing the environment with requirements.txt
 uv sync
 
 # Ensuring environment exactly matches requirements.txt (installing, updating, and removing packages as needed)
-uv pip sync requirements.txt
+uv sync requirements.txt
 ```
