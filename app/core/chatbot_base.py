@@ -120,20 +120,36 @@ class LimitlessOSIntelligentAgent:
         )
     
     def _create_memory(self) -> Optional[AsyncMemoryClient]:
-        """Create mem0 async memory client.
+        """Create mem0 async memory client using our reusable wrapper.
         
         Returns:
             Optional[AsyncMemoryClient]: Memory client instance or None if unavailable
         """
         if not MEM0_AVAILABLE:
-            logger.warning("mem0 is not available. Install with: pip install mem0ai")
+            logger.warning("mem0 is not available. Install with: uv add mem0ai")
             return None
         
         if not self.config.memory.api_key:
             logger.warning("MEM0_API_KEY not found in environment variables")
             return None
         
-        return AsyncMemoryClient(api_key=self.config.memory.api_key)
+        # Import our reusable mem0 client wrapper
+        try:
+            from app.mem0.mem0AsyncClient import Mem0AsyncClientWrapper, MemoryConfig
+            
+            # Create memory config
+            memory_config = MemoryConfig(
+                api_key=self.config.memory.api_key,
+                output_format=self.config.memory.output_format
+            )
+            
+            # Return our enhanced wrapper instead of raw AsyncMemoryClient
+            return Mem0AsyncClientWrapper(memory_config)
+            
+        except ImportError as e:
+            logger.error(f"Failed to import mem0AsyncClient wrapper: {e}")
+            # Fallback to raw AsyncMemoryClient
+            return AsyncMemoryClient(api_key=self.config.memory.api_key)
     
     def _create_tools(self) -> List[Any]:
         """Create tools for the sales agent.
@@ -218,7 +234,7 @@ class LimitlessOSIntelligentAgent:
         self.graph = graph_builder.compile()
     
     async def get_all_memories(self, user_id: str) -> List[Dict[str, Any]]:
-        """Retrieve ALL memories for the user.
+        """Retrieve ALL memories for the user using our enhanced wrapper.
         
         Args:
             user_id: User identifier to retrieve memories for
@@ -230,16 +246,36 @@ class LimitlessOSIntelligentAgent:
             return []
         
         try:
-            # Get ALL memories for complete context
-            all_memories = await self.memory.get_all(user_id=user_id)
+            # Check if we're using our wrapper or raw AsyncMemoryClient
+            from app.mem0.mem0AsyncClient import Mem0AsyncClientWrapper
             
-            # Handle different response formats from mem0
-            if isinstance(all_memories, dict):
-                return all_memories.get("memories", [])
-            elif isinstance(all_memories, list):
-                return all_memories
+            if isinstance(self.memory, Mem0AsyncClientWrapper):
+                # Use our enhanced wrapper method
+                memory_entries = await self.memory.get_all_memories(user_id)
+                # Convert MemoryEntry objects to dictionaries for backward compatibility
+                return [
+                    {
+                        "id": mem.id,
+                        "memory": mem.memory,
+                        "user_id": mem.user_id,
+                        "created_at": mem.created_at,
+                        "updated_at": mem.updated_at,
+                        "metadata": mem.metadata
+                    }
+                    for mem in memory_entries
+                ]
             else:
-                return []
+                # Fallback to raw AsyncMemoryClient
+                all_memories = await self.memory.get_all(user_id=user_id)
+                
+                # Handle different response formats from mem0
+                if isinstance(all_memories, dict):
+                    return all_memories.get("memories", [])
+                elif isinstance(all_memories, list):
+                    return all_memories
+                else:
+                    return []
+                    
         except Exception as e:
             logger.error(f"Failed to get all memories: {e}")
             return []
@@ -290,14 +326,28 @@ class LimitlessOSIntelligentAgent:
         
         # Store the conversation in memory for future reference
         try:
-            await self.memory.add(
-                messages=[
-                    {"role": "user", "content": message},
-                    {"role": "assistant", "content": response}
-                ],
-                user_id=user_id,
-                output_format=self.config.memory.output_format
-            )
+            from app.mem0.mem0AsyncClient import Mem0AsyncClientWrapper
+            
+            if isinstance(self.memory, Mem0AsyncClientWrapper):
+                # Use our enhanced wrapper method
+                await self.memory.add_memory(
+                    messages=[
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": response}
+                    ],
+                    user_id=user_id,
+                    metadata=kwargs
+                )
+            else:
+                # Fallback to raw AsyncMemoryClient
+                await self.memory.add(
+                    messages=[
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": response}
+                    ],
+                    user_id=user_id,
+                    output_format=self.config.memory.output_format
+                )
             logger.info(f"Added conversation to memory for user {user_id}")
         except Exception as e:
             logger.error(f"Failed to add conversation to memory: {e}")

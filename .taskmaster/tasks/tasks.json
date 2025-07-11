@@ -1,0 +1,219 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Design and Implement MongoDB Schema",
+        "description": "Create comprehensive MongoDB schema for conversation state management, sales pipeline tracking, and agent handoffs",
+        "details": "Implement the complete MongoDB schema as specified in the PRD with collections for conversations including: user_id, channel, status, sales_stage, stage_history, qualification data (BANT criteria), messages array, objections tracking, handoffs history, and metadata. Create indexes for optimal query performance on user_id+updated_at, sales_stage+status, and follow_up_scheduled fields. Use embedded documents for qualification, objections, and handoffs to maintain atomicity. Implement proper data validation and ensure schema flexibility for future extensions.",
+        "testStrategy": "Create unit tests for schema validation, test CRUD operations on sample data, verify index performance with large datasets, and validate data integrity constraints",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Define Core Conversation Schema Structure",
+            "description": "Design and implement the main conversation collection schema with all required fields including user_id, channel, status, sales_stage, stage_history, qualification data, messages array, objections tracking, handoffs history, and metadata",
+            "dependencies": [],
+            "details": "Create the conversation collection schema with proper field types and structure. Include: user_id (ObjectId), channel (string), status (enum: active/inactive/closed), sales_stage (enum: lead/qualified/proposal/negotiation/closed), stage_history (array of objects with stage, timestamp, notes), qualification (embedded document with BANT criteria), messages (array of message objects), objections (array of objection objects), handoffs (array of handoff objects), metadata (flexible object for additional data), created_at and updated_at timestamps. Use MongoDB's schema validation to enforce data types and required fields.",
+            "status": "done",
+            "testStrategy": "Create test documents with various field combinations and validate schema enforcement through insertion attempts"
+          },
+          {
+            "id": 2,
+            "title": "Implement Embedded Document Schemas",
+            "description": "Design and implement the embedded document structures for qualification data (BANT criteria), objections tracking, and handoffs history to maintain data atomicity",
+            "dependencies": [
+              1
+            ],
+            "details": "Define embedded schemas: Qualification document with budget (number), authority (boolean), need (string), timeline (date), score (number), notes (string). Objections document with type (string), description (string), response (string), resolved (boolean), timestamp (date). Handoffs document with from_agent (string), to_agent (string), reason (string), timestamp (date), notes (string), status (enum). Messages document with sender (string), content (string), timestamp (date), type (enum), metadata (object). Ensure all embedded documents support atomic updates.",
+            "status": "done",
+            "testStrategy": "Test embedded document operations including partial updates, array operations, and atomic transactions"
+          },
+          {
+            "id": 3,
+            "title": "Create Performance Optimization Indexes",
+            "description": "Implement strategic database indexes for optimal query performance on frequently accessed fields and query patterns",
+            "dependencies": [
+              2
+            ],
+            "details": "Create compound indexes: user_id + updated_at (for user conversation history), sales_stage + status (for pipeline queries), follow_up_scheduled (for scheduled tasks). Create single field indexes on: user_id, channel, status, sales_stage, created_at. Implement text indexes on messages.content and objections.description for search functionality. Use sparse indexes where appropriate for optional fields. Configure index options for optimal performance including background creation and partial indexes for conditional queries.",
+            "status": "done",
+            "testStrategy": "Use MongoDB explain() to verify index usage in common queries and measure query performance before and after index creation"
+          },
+          {
+            "id": 4,
+            "title": "Implement Data Validation and Constraints",
+            "description": "Set up comprehensive data validation rules, constraints, and business logic enforcement at the database level",
+            "dependencies": [
+              3
+            ],
+            "details": "Implement MongoDB schema validation using JSON Schema validator with rules for: required fields validation, data type enforcement, enum value constraints for status and sales_stage, date format validation, array size limits for messages and objections, custom validation for BANT scoring (0-100 range), email format validation for user contacts, phone number format validation. Create validation for business rules like stage progression logic and handoff requirements. Implement proper error handling and meaningful error messages for validation failures.",
+            "status": "done",
+            "testStrategy": "Create comprehensive test suite with valid and invalid data scenarios, test edge cases and boundary conditions for all validation rules"
+          },
+          {
+            "id": 5,
+            "title": "Ensure Schema Flexibility and Future Extensions",
+            "description": "Design schema architecture to support future extensions and modifications without breaking existing functionality",
+            "dependencies": [
+              4
+            ],
+            "details": "Implement schema versioning strategy with version field in documents. Design flexible metadata fields using MongoDB's dynamic schema capabilities. Create migration scripts template for future schema changes. Implement backward compatibility considerations for field additions/modifications. Use discriminator patterns for polymorphic data where needed. Document schema evolution guidelines and best practices. Create utility functions for schema validation and migration. Implement feature flags support in metadata for gradual rollouts of new functionality.",
+            "status": "done",
+            "testStrategy": "Test schema flexibility by adding new fields and validating backward compatibility, create mock migration scenarios and test rollback procedures"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Build MongoDB Integration Layer",
+        "description": "Create MongoDB manager class with async operations for conversation state management and data persistence",
+        "details": "Implement MongoDBManager class in app/db/mongodb_manager.py with async methods: create_conversation(), get_conversation_state(), update_sales_stage(), add_message(), record_handoff(), update_qualification(), add_objection(), mark_objection_handled(). Include connection pooling, error handling, retry logic, and proper async/await patterns. Add configuration management for MongoDB Atlas connection strings and implement connection health checks.",
+        "testStrategy": "Write integration tests for all CRUD operations, test connection pooling under load, verify error handling for network failures, and validate data consistency across operations",
+        "priority": "high",
+        "dependencies": [
+          1
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Implement Conversation State Management Service",
+        "description": "Create state management service that orchestrates MongoDB and Mem0 for unified conversation state handling",
+        "details": "Build ConversationStateManager class in app/services/state_manager.py that integrates MongoDB and Mem0. Implement methods: load_state(), save_state(), transition_stage(), sync_memories(). Create Pydantic models for ConversationState with proper validation. Implement state transition logic with validation rules (e.g., can't go from closing back to qualification). Add memory synchronization between MongoDB snapshots and Mem0 long-term storage.",
+        "testStrategy": "Test state transitions with invalid sequences, verify memory sync consistency, test concurrent state updates, and validate Pydantic model validation",
+        "priority": "high",
+        "dependencies": [
+          2
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "Implement Mem0 Async Client Integration",
+        "description": "Complete the empty mem0AsyncClient.py implementation for conversational memory management",
+        "details": "Implement the AsyncMemoryClient class with methods for storing, retrieving, and searching conversational memories. Create async methods: add_memory(), get_memories(), search_memories(), update_memory(), delete_memory(). Implement semantic search capabilities for retrieving relevant context based on conversation topics. Add memory categorization (facts, preferences, objections, outcomes) and implement memory decay/importance scoring. Integrate with MongoDB for memory snapshots and synchronization.",
+        "testStrategy": "Test memory storage and retrieval accuracy, validate semantic search relevance, test memory synchronization with MongoDB, and verify performance under high memory volumes",
+        "priority": "medium",
+        "dependencies": [
+          3
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "Refactor Current Agent to Supervisor Agent",
+        "description": "Transform existing LimitlessOSIntelligentAgent into a routing supervisor that orchestrates specialized agents",
+        "details": "Refactor the current agent by removing sales-specific logic and implementing routing decision logic. Create supervisor agent that analyzes conversation state from MongoDB, reviews message history, and makes intelligent routing decisions to qualifier, objection_handler, or closer agents. Implement routing rules based on sales_stage, qualification status, and conversation context. Add handoff recording and state transition management. Create routing decision explanations for debugging and analytics.",
+        "testStrategy": "Test routing decisions with various conversation scenarios, verify handoff recording accuracy, test state persistence across handoffs, and validate routing logic with edge cases",
+        "priority": "high",
+        "dependencies": [
+          3
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 6,
+        "title": "Create Agent Handoff Mechanism",
+        "description": "Implement LangGraph handoff system with Command-based agent transitions and state updates",
+        "details": "Create handoff mechanism in app/core/handoffs.py using LangGraph Command system. Implement handoff tools: handoff_to_qualifier(), handoff_to_objection_handler(), handoff_to_closer() that return Command objects with goto, update, and graph parameters. Add handoff validation to prevent invalid transitions. Implement handoff logging and analytics tracking. Create handoff context passing to ensure receiving agent has necessary information.",
+        "testStrategy": "Test all handoff combinations, verify state updates during handoffs, test handoff validation rules, and ensure proper context passing between agents",
+        "priority": "medium",
+        "dependencies": [
+          5
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 7,
+        "title": "Update LangGraph Architecture for Multi-Agent System",
+        "description": "Restructure LangGraph to support multiple specialized agents with proper state management and routing",
+        "details": "Update the LangGraph structure to include multiple nodes: supervisor, qualifier, objection_handler, closer. Implement StateGraph with ConversationState that includes MongoDB state, current agent, and conversation context. Add conditional edges based on handoff decisions and state transitions. Implement proper error handling and fallback mechanisms. Add graph visualization and debugging capabilities for development.",
+        "testStrategy": "Test graph execution with various conversation flows, verify state persistence across nodes, test error handling and recovery, and validate graph structure integrity",
+        "priority": "high",
+        "dependencies": [
+          6
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "Implement Qualifier Agent",
+        "description": "Create specialized qualification agent that assesses prospects using BANT criteria through natural conversation",
+        "details": "Build Qualifier Agent that extracts qualification logic from current system prompt. Implement BANT assessment (Budget, Authority, Need, Timeline) through strategic questioning. Create qualification scoring algorithm (0.0-1.0) based on responses. Implement natural conversation flow that doesn't feel like an interrogation. Add qualification data updates to MongoDB and trigger appropriate handoffs based on qualification results. Include disqualification logic for prospects who don't meet criteria.",
+        "testStrategy": "Test qualification scoring accuracy with various prospect profiles, verify BANT data extraction, test natural conversation flow, and validate handoff triggers based on qualification results",
+        "priority": "medium",
+        "dependencies": [
+          7
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 9,
+        "title": "Implement Objection Handler Agent",
+        "description": "Create specialized agent for detecting and addressing sales objections with proven response frameworks",
+        "details": "Build Objection Handler Agent with real-time objection detection capabilities. Implement objection categorization (price, implementation, trust, product fit) and response strategies. Create objection tracking system that records raised objections, responses given, and resolution status. Implement proven objection handling frameworks (Feel-Felt-Found, Question-Isolate-Answer). Add objection response personalization based on Mem0 memories and prospect context. Include escalation logic for complex objections.",
+        "testStrategy": "Test objection detection accuracy across various conversation styles, verify response appropriateness, test objection tracking and resolution status, and validate escalation triggers",
+        "priority": "medium",
+        "dependencies": [
+          8
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 10,
+        "title": "Implement Closer Agent",
+        "description": "Create specialized closing agent that drives qualified prospects toward commitment with personalized offers",
+        "details": "Build Closer Agent that reviews qualification data and handled objections to create personalized closing strategies. Implement closing techniques including scarcity, social proof, and risk reversal. Create dynamic offer generation based on prospect needs and budget. Add urgency creation and clear next steps definition. Implement final negotiation handling and payment collection processes. Include follow-up scheduling for prospects not ready to close immediately.",
+        "testStrategy": "Test closing strategy personalization, verify offer generation accuracy, test closing technique effectiveness, and validate payment collection integration",
+        "priority": "medium",
+        "dependencies": [
+          9
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 11,
+        "title": "Implement Multi-Channel API Integration",
+        "description": "Create unified API layer supporting Instagram, WhatsApp, and web channels with consistent state management",
+        "details": "Build channel-agnostic API endpoints that handle conversations across Instagram DMs, WhatsApp, and web chat. Implement conversation management endpoints: create_conversation, send_message, get_conversation_history. Add channel-specific formatting and feature handling while maintaining unified conversation state. Implement authentication and rate limiting. Add webhook handlers for Instagram and WhatsApp. Create analytics endpoints for sales pipeline visibility and agent performance metrics.",
+        "testStrategy": "Test API endpoints across all channels, verify state consistency across channel switches, test webhook reliability, and validate authentication and rate limiting",
+        "priority": "medium",
+        "dependencies": [
+          10
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 12,
+        "title": "Implement Comprehensive Testing and Analytics",
+        "description": "Create end-to-end testing suite and analytics dashboard for system monitoring and optimization",
+        "details": "Build comprehensive test suite covering multi-agent workflows, state persistence, handoff mechanisms, and channel integration. Implement integration tests for complete conversation flows from initial contact to closing. Create analytics dashboard showing conversion funnel, agent performance, common objections, and sales pipeline metrics. Add monitoring and alerting for system health. Implement A/B testing framework for agent prompt optimization. Create debugging tools for conversation flow analysis.",
+        "testStrategy": "Execute full end-to-end conversation scenarios, validate analytics accuracy against actual conversations, test monitoring and alerting systems, and verify A/B testing framework functionality",
+        "priority": "medium",
+        "dependencies": [
+          11
+        ],
+        "status": "pending",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2025-07-11T05:23:57.016Z",
+      "updated": "2025-07-11T07:16:32.513Z",
+      "description": "Tasks for master context"
+    }
+  }
+}

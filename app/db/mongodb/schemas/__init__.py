@@ -1,0 +1,1 @@
+"""MongoDB schema definitions for Sales AI Closer system."""

@@ -1,0 +1,1 @@
+"""MongoDB middleware for validation and data processing."""

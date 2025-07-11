@@ -1,0 +1,1 @@
+"""MongoDB integration package for Sales AI Closer system."""
