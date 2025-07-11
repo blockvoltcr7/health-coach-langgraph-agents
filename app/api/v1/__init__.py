@@ -1,20 +1,11 @@
 """
 Main entrypoint for the v1 API.
 
-This module creates a FastAPI router that includes all v1 endpoints.
+This module provides the API router that includes all v1 endpoints.
 """
 
-from fastapi import APIRouter
-from app.api.v1.endpoints import hello_world_v1
+# The main API router is now defined in api.py to avoid conflicts
+# Import it from there if needed
+from .api import api_router
 
-
-# Create the main v1 router
-api_router = APIRouter(
-    prefix="/v1",
-    tags=["v1"],
-    responses={404: {"description": "Not found"}},
-)
-
-
-# Include routes from endpoints
-api_router.include_router(hello_world_v1.router, tags=["hello"])
+__all__ = ["api_router"]
