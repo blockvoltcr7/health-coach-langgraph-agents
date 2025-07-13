@@ -21,6 +21,12 @@ class MongoDBConfig(BaseModel):
     pool settings.
     """
     
+    # Environment configuration
+    environment: str = Field(
+        default_factory=lambda: os.getenv('APP_ENV', 'prod').lower(),
+        description="Application environment (dev, staging, prod)"
+    )
+    
     # Connection credentials
     username: str = Field(description="MongoDB username")
     password: str = Field(description="MongoDB password")
@@ -32,9 +38,9 @@ class MongoDBConfig(BaseModel):
     )
     
     # Database configuration
-    database_name: str = Field(
+    base_database_name: str = Field(
         default="limitless_os_sales",
-        description="Database name for the sales system"
+        description="Base database name for the sales system"
     )
     
     # Collection names
@@ -71,6 +77,14 @@ class MongoDBConfig(BaseModel):
             raise ValueError(
                 "MongoDB credentials not found. Please set MONGODB_USERNAME "
                 "and MONGODB_PASSWORD environment variables."
+            )
+        
+        # Validate environment
+        valid_environments = ['dev', 'staging', 'prod']
+        if self.environment not in valid_environments:
+            raise ValueError(
+                f"Invalid environment: {self.environment}. "
+                f"Must be one of: {', '.join(valid_environments)}"
             )
     
     @computed_field
@@ -110,6 +124,18 @@ class MongoDBConfig(BaseModel):
             'serverSelectionTimeoutMS': self.server_selection_timeout_ms,
         }
     
+    @computed_field
+    @property
+    def database_name(self) -> str:
+        """Get the environment-specific database name.
+        
+        Returns:
+            str: Database name with environment suffix for non-production
+        """
+        if self.environment != 'prod':
+            return f"{self.base_database_name}_{self.environment}"
+        return self.base_database_name
+    
     @property
     def collection_names(self) -> Dict[str, str]:
         """Get all collection names.
@@ -119,6 +145,23 @@ class MongoDBConfig(BaseModel):
         """
         return {
             'conversations': self.conversations_collection,
+        }
+    
+    def get_environment_info(self) -> Dict[str, Any]:
+        """Get information about the current environment configuration.
+        
+        Returns:
+            Dict[str, Any]: Environment details including database name and settings
+        """
+        return {
+            'environment': self.environment,
+            'database_name': self.database_name,
+            'cluster_url': self.cluster_url,
+            'is_production': self.environment == 'prod',
+            'connection_pool': {
+                'max_size': self.max_pool_size,
+                'min_size': self.min_pool_size
+            }
         }
     
     class Config:

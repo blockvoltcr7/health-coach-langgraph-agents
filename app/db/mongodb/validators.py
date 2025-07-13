@@ -424,3 +424,113 @@ def create_stage_transition(
     ConversationValidator.validate_iso_date(transition["timestamp"], "transition.timestamp")
     
     return transition
+
+
+class SalesStageTransitionValidator:
+    """Validator for sales stage transitions."""
+    
+    # Define valid stage transitions
+    # Each stage maps to a list of valid next stages
+    VALID_TRANSITIONS = {
+        "lead": ["qualification", "closed_lost", "follow_up"],
+        "qualification": ["qualified", "objection_handling", "closed_lost", "follow_up"],
+        "qualified": ["objection_handling", "closing", "closed_lost", "follow_up"],
+        "objection_handling": ["qualified", "closing", "closed_lost", "follow_up"],
+        "closing": ["closed_won", "closed_lost", "objection_handling", "follow_up"],
+        "closed_won": ["follow_up"],  # Only follow-up after winning
+        "closed_lost": ["follow_up"],  # Only follow-up after losing
+        "follow_up": ["lead", "qualification", "qualified", "closing"],  # Can re-engage at various stages
+        # Legacy support
+        "proposal": ["negotiation", "closed", "objection_handling"],
+        "negotiation": ["closed", "proposal", "objection_handling"],
+        "closed": ["follow_up"]
+    }
+    
+    # Define required context for certain transitions
+    TRANSITION_REQUIREMENTS = {
+        # Transition to qualified requires BANT completion
+        ("qualification", "qualified"): {
+            "requires": ["qualification_complete"],
+            "message": "Cannot move to qualified without completing BANT qualification"
+        },
+        # Transition to closed_won requires deal details
+        ("closing", "closed_won"): {
+            "requires": ["deal_value", "payment_method"],
+            "message": "Cannot close deal without deal value and payment method"
+        },
+        # Transition to closed_lost requires reason
+        ("*", "closed_lost"): {
+            "requires": ["loss_reason"],
+            "message": "Cannot mark as closed_lost without providing a reason"
+        }
+    }
+    
+    @classmethod
+    def validate_transition(
+        cls,
+        from_stage: str,
+        to_stage: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, Optional[str]]:
+        """Validate if a stage transition is allowed.
+        
+        Args:
+            from_stage: Current stage
+            to_stage: Target stage
+            context: Additional context for validation
+            
+        Returns:
+            Tuple[bool, Optional[str]]: (is_valid, error_message)
+        """
+        # Check if from_stage is valid
+        if from_stage not in cls.VALID_TRANSITIONS:
+            return False, f"Invalid current stage: {from_stage}"
+        
+        # Check if transition is allowed
+        valid_next_stages = cls.VALID_TRANSITIONS[from_stage]
+        if to_stage not in valid_next_stages:
+            return False, f"Cannot transition from '{from_stage}' to '{to_stage}'. Valid transitions: {', '.join(valid_next_stages)}"
+        
+        # Check transition requirements
+        transition_key = (from_stage, to_stage)
+        wildcard_key = ("*", to_stage)
+        
+        requirements = None
+        if transition_key in cls.TRANSITION_REQUIREMENTS:
+            requirements = cls.TRANSITION_REQUIREMENTS[transition_key]
+        elif wildcard_key in cls.TRANSITION_REQUIREMENTS:
+            requirements = cls.TRANSITION_REQUIREMENTS[wildcard_key]
+        
+        if requirements and context:
+            missing = [req for req in requirements["requires"] if req not in context or not context[req]]
+            if missing:
+                return False, f"{requirements['message']}. Missing: {', '.join(missing)}"
+        elif requirements and not context:
+            return False, f"{requirements['message']}. No context provided."
+        
+        return True, None
+    
+    @classmethod
+    def get_next_stages(cls, current_stage: str) -> List[str]:
+        """Get valid next stages for a given stage.
+        
+        Args:
+            current_stage: Current sales stage
+            
+        Returns:
+            List[str]: List of valid next stages
+        """
+        return cls.VALID_TRANSITIONS.get(current_stage, [])
+    
+    @classmethod
+    def is_terminal_stage(cls, stage: str) -> bool:
+        """Check if a stage is terminal (no further progression).
+        
+        Args:
+            stage: Sales stage to check
+            
+        Returns:
+            bool: True if stage is terminal
+        """
+        terminal_stages = {"closed_won", "closed_lost", "closed"}
+        return stage in terminal_stages

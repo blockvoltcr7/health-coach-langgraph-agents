@@ -17,10 +17,17 @@ To run this application:
 4. Visit http://localhost:8000/docs for interactive API documentation
 """
 
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.api import api_router
+from app.db.mongodb.client import get_mongodb_client, close_mongodb_connection
+from app.db.mongodb.async_client import get_async_mongodb_client, close_async_mongodb_connection
+from app.db.mongodb.utils import initialize_database
 import uvicorn
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Enhanced API metadata for Swagger documentation
 tags_metadata = [
@@ -136,6 +143,56 @@ app.add_middleware(
 app.include_router(api_router, prefix="/api/v1")
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize MongoDB connection on application startup."""
+    logger.info("Starting up Limitless OS Sales Agent API...")
+    try:
+        # Initialize sync MongoDB client
+        client = get_mongodb_client()
+        
+        # Initialize async MongoDB client
+        async_client = await get_async_mongodb_client()
+        logger.info("Async MongoDB client initialized")
+        
+        # Initialize database schema and indexes
+        db = client.get_database()
+        try:
+            results = initialize_database(db)
+            logger.info(f"MongoDB connected to database: {results['database']}")
+            if results['collections_created']:
+                logger.info(f"Collections initialized: {results['collections_created']}")
+            logger.info(f"Total indexes: {len(results['indexes_created'])}")
+        except Exception as init_error:
+            logger.warning(f"Database initialization warning: {init_error}")
+            # Continue anyway - database may already be initialized
+        
+        # Perform health check
+        health = client.health_check()
+        logger.info(f"MongoDB health status: {health['status']}")
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize MongoDB: {e}")
+        # Don't prevent the app from starting, but log the error
+        # In production, you might want to fail fast here
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close MongoDB connections on application shutdown."""
+    logger.info("Shutting down Limitless OS Sales Agent API...")
+    try:
+        # Close sync connection
+        close_mongodb_connection()
+        logger.info("Sync MongoDB connection closed successfully")
+        
+        # Close async connection
+        await close_async_mongodb_connection()
+        logger.info("Async MongoDB connection closed successfully")
+    except Exception as e:
+        logger.error(f"Error closing MongoDB connections: {e}")
+
+
 @app.get(
     "/",
     tags=["Health"],
@@ -214,12 +271,33 @@ async def health_check():
     
     Returns system status and basic information.
     """
+    # Get MongoDB health status
+    mongodb_health = {"status": "unavailable", "connected": False}
+    try:
+        client = get_mongodb_client()
+        raw_health = client.health_check()
+        # Simplify the response - remove non-serializable objects
+        mongodb_health = {
+            "status": raw_health.get("status", "unknown"),
+            "connected": raw_health.get("connected", False),
+            "version": raw_health.get("version", "unknown")
+        }
+    except Exception as e:
+        mongodb_health["error"] = str(e)
+        logger.error(f"MongoDB health check error: {e}")
+    
+    # Determine overall health
+    overall_status = "healthy" if mongodb_health.get("connected", False) else "degraded"
+    
     return {
-        "status": "healthy",
+        "status": overall_status,
         "message": "Health Coach LangGraph Agents API is running successfully",
         "service": "health-coach-langgraph-agents",
         "version": "1.0.0",
-        "timestamp": "2024-01-01T00:00:00Z"
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "dependencies": {
+            "mongodb": mongodb_health
+        }
     }
 
 

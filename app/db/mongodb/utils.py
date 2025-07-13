@@ -47,8 +47,12 @@ def initialize_database(database: Optional[Database] = None) -> Dict[str, Any]:
         else:
             # Collection exists, ensure indexes are created
             collection = db['conversations']
-            ConversationSchema.create_indexes(collection)
-            logger.info("Conversations collection already exists, indexes updated")
+            try:
+                ConversationSchema.create_indexes(collection)
+                logger.info("Conversations collection already exists, indexes updated")
+            except Exception as e:
+                logger.warning(f"Index creation warning: {e}")
+                # Don't fail the initialization, just log the warning
         
         # Get index information
         indexes = list(collection.list_indexes())

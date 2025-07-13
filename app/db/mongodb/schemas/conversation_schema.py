@@ -23,7 +23,8 @@ from app.db.mongodb.schemas.validation_schemas import (
 from app.db.mongodb.validators import (
     ConversationValidator,
     ValidationError,
-    create_stage_transition
+    create_stage_transition,
+    SalesStageTransitionValidator
 )
 
 logger = logging.getLogger(__name__)
@@ -412,30 +413,63 @@ class ConversationSchema:
         Args:
             collection: MongoDB collection instance
         """
-        # Original indexes
-        collection.create_index([("user_id", 1), ("updated_at", -1)])
-        collection.create_index([("sales_stage", 1), ("status", 1)])
-        collection.create_index([("channel", 1)])
-        collection.create_index([("created_at", -1)])
+        # Get existing indexes
+        existing_indexes = {idx['name'] for idx in collection.list_indexes()}
         
-        # New enhanced indexes
-        collection.create_index(
-            [("follow_up.required", 1), ("follow_up.scheduled_date", 1)],
-            name="follow_up_scheduling_idx"
-        )
-        collection.create_index(
-            [("current_agent", 1), ("status", 1), ("updated_at", -1)],
-            name="agent_workload_idx"
-        )
-        collection.create_index(
-            [("is_qualified", 1), ("qualification.overall_score", -1)],
-            name="qualification_pipeline_idx"
-        )
-        collection.create_index(
-            [("objections.status", 1), ("objections.type", 1)],
-            name="objection_analysis_idx",
-            sparse=True
-        )
+        # Define indexes with explicit names
+        indexes_to_create = [
+            ([("user_id", 1), ("updated_at", -1)], "user_lookup_idx"),
+            ([("sales_stage", 1), ("status", 1)], "sales_pipeline_idx"),
+            ([("channel", 1)], "channel_idx"),
+            ([("created_at", -1)], "recent_conversations_idx"),
+            ([("follow_up.required", 1), ("follow_up.scheduled_date", 1)], "follow_up_scheduling_idx"),
+            ([("current_agent", 1), ("status", 1), ("updated_at", -1)], "agent_workload_idx")
+        ]
+        
+        # Create only missing indexes
+        for index_spec, index_name in indexes_to_create:
+            if index_name not in existing_indexes:
+                try:
+                    collection.create_index(index_spec, name=index_name)
+                    logger.info(f"Created index: {index_name}")
+                except Exception as e:
+                    logger.warning(f"Could not create index {index_name}: {e}")
+        
+        # Additional qualification index
+        if "qualification_pipeline_idx" not in existing_indexes:
+            try:
+                collection.create_index(
+                    [("is_qualified", 1), ("qualification.overall_score", -1)],
+                    name="qualification_pipeline_idx"
+                )
+                logger.info("Created index: qualification_pipeline_idx")
+            except Exception as e:
+                logger.warning(f"Could not create qualification index: {e}")
+        
+        # Objection analysis index (sparse for performance)
+        if "objection_analysis_idx" not in existing_indexes:
+            try:
+                collection.create_index(
+                    [("objections.status", 1), ("objections.type", 1)],
+                    name="objection_analysis_idx",
+                    sparse=True
+                )
+                logger.info("Created index: objection_analysis_idx")
+            except Exception as e:
+                logger.warning(f"Could not create objection index: {e}")
+        
+        # Text search index for message content
+        if "message_search_idx" not in existing_indexes:
+            try:
+                collection.create_index(
+                    [("messages.content", "text")],
+                    name="message_search_idx",
+                    default_language="english",
+                    weights={"messages.content": 1}
+                )
+                logger.info("Created index: message_search_idx for full-text search")
+            except Exception as e:
+                logger.warning(f"Could not create text search index: {e}")
     
     @staticmethod
     def create_conversation_document(
@@ -783,35 +817,79 @@ class ConversationRepository(BaseRepository[Dict[str, Any]]):
         self,
         conversation_id: str,
         new_stage: str,
-        notes: str = ""
+        notes: str = "",
+        context: Optional[Dict[str, Any]] = None,
+        validate: bool = True,
+        triggered_by: str = "system"
     ) -> UpdateResult:
-        """Update the sales stage of a conversation.
+        """Update the sales stage of a conversation with validation.
         
         Args:
             conversation_id: Conversation ID
             new_stage: New sales stage
             notes: Optional notes about the transition
+            context: Context for validation
+            validate: Whether to validate the transition
+            triggered_by: Who/what triggered the transition
             
         Returns:
             UpdateResult: Result of the update
+            
+        Raises:
+            ValueError: If transition is invalid and validate=True
         """
+        # Get current conversation
+        conversation = self.find_by_id(conversation_id)
+        if not conversation:
+            raise ValueError(f"Conversation {conversation_id} not found")
+        
+        current_stage = conversation.get("sales_stage")
+        
+        # Validate transition if requested
+        if validate and current_stage:
+            is_valid, error_msg = SalesStageTransitionValidator.validate_transition(
+                current_stage,
+                new_stage,
+                context
+            )
+            if not is_valid:
+                raise ValueError(f"Invalid stage transition: {error_msg}")
+        
         now = datetime.utcnow()
-        return self.update_by_id(
-            conversation_id,
-            {
-                "$set": {
-                    "sales_stage": new_stage,
-                    "updated_at": now.isoformat() + "Z"
-                },
-                "$push": {
-                    "stage_history": {
-                        "stage": new_stage,
-                        "timestamp": now.isoformat() + "Z",
-                        "notes": notes
-                    }
+        
+        # Build update query
+        update_query = {
+            "$set": {
+                "sales_stage": new_stage,
+                "updated_at": now.isoformat() + "Z"
+            },
+            "$push": {
+                "stage_history": {
+                    "stage": new_stage,
+                    "timestamp": now.isoformat() + "Z",
+                    "notes": notes
                 }
             }
-        )
+        }
+        
+        # Add stage transition if current stage exists
+        if current_stage:
+            transition = create_stage_transition(
+                current_stage,
+                new_stage,
+                notes or "Stage progression",
+                triggered_by,
+                context
+            )
+            update_query["$push"]["stage_transitions"] = transition
+        
+        # Update is_qualified flag for qualified stage
+        if new_stage == SalesStage.QUALIFIED.value:
+            update_query["$set"]["is_qualified"] = True
+            update_query["$set"]["qualification.qualified_at"] = now.isoformat() + "Z"
+            update_query["$set"]["qualification.qualified_by"] = triggered_by
+        
+        return self.update_by_id(conversation_id, update_query)
     
     def add_handoff(
         self,
