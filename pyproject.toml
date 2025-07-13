@@ -171,6 +171,7 @@ dependencies = [
     "pyright==1.1.402",
     "pysbd==0.3.4",
     "pytest==8.4.0",
+    "pytest-cov==6.0.0",
     "pytest-html==4.1.1",
     "pytest-metadata==3.1.1",
     "python-dateutil==2.9.0.post0",
@@ -241,9 +242,17 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+addopts = """
+    --cov=app
+    --cov-report=term-missing
+    --cov-report=html
+    --cov-report=xml
+    --cov-fail-under=80
+"""
 
 [dependency-groups]
 dev = [
     "allure-pytest>=2.14.3",
     "pytest>=8.4.0",
+    "pytest-cov>=6.0.0",
 ]

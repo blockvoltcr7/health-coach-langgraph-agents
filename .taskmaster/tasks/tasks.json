@@ -180,7 +180,7 @@
               9
             ],
             "details": "Implement Pydantic models for all MongoDB documents with proper validation rules. Create schema migration system for database updates. Implement compound indexes for optimal query performance (user_id+updated_at, sales_stage+status). Add text indexes for message search capabilities. Create index monitoring and optimization tools.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": ""
           },
           {
@@ -194,7 +194,7 @@
               10
             ],
             "details": "Create integration tests for all CRUD operations using pytest-asyncio. Implement test fixtures for MongoDB test database setup/teardown. Test error scenarios including network failures, timeout conditions, and data validation errors. Create test data factories for consistent test scenarios. Implement test coverage reporting and ensure 100% method coverage.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": ""
           },
           {
@@ -222,7 +222,73 @@
           2
         ],
         "status": "pending",
-        "subtasks": []
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Create ConversationStateManager class scaffolding",
+            "description": "Build the foundational ConversationStateManager class structure in app/services/state_manager.py with core method signatures and initialization logic",
+            "dependencies": [],
+            "details": "Create ConversationStateManager class with __init__ method accepting MongoDB and Mem0 clients. Define method signatures for load_state(), save_state(), transition_stage(), and sync_memories(). Implement basic logging setup and error handling structure. Add configuration management for state transition rules and memory sync intervals. Create class-level constants for state definitions and transition mappings.",
+            "status": "pending",
+            "testStrategy": ""
+          },
+          {
+            "id": 2,
+            "title": "Implement MongoDB and Mem0 integration adapters",
+            "description": "Create adapter classes for MongoDB and Mem0 integration with proper async handling and connection management",
+            "dependencies": [
+              1
+            ],
+            "details": "Build MongoDBAdapter class with async methods for conversation state CRUD operations. Implement Mem0Adapter class wrapping the AsyncMemoryClient for memory operations. Add connection pooling and retry logic for both adapters. Implement proper error handling and connection recovery mechanisms. Create adapter factory pattern for easy testing and dependency injection. Add health check methods for both storage systems.",
+            "status": "pending",
+            "testStrategy": ""
+          },
+          {
+            "id": 3,
+            "title": "Implement state transition logic and validation rules",
+            "description": "Create comprehensive state transition engine with business rule validation and transition guards",
+            "dependencies": [
+              1
+            ],
+            "details": "Define conversation state enum (qualification, objection_handling, closing, completed, disqualified). Implement state transition matrix with allowed transitions and validation rules. Create transition guard functions that prevent invalid state changes (e.g., closing back to qualification). Add business logic validation for each transition including required data checks. Implement transition history tracking and audit logging. Create rollback mechanisms for failed transitions.",
+            "status": "pending",
+            "testStrategy": ""
+          },
+          {
+            "id": 4,
+            "title": "Design and implement Pydantic models with validation",
+            "description": "Create comprehensive Pydantic models for ConversationState with proper validation, serialization, and type safety",
+            "dependencies": [
+              3
+            ],
+            "details": "Design ConversationState Pydantic model with fields for state, metadata, timestamps, and validation rules. Create nested models for QualificationData, ObjectionData, and ClosingData. Implement custom validators for state transitions, data consistency, and business rule compliance. Add serialization methods for MongoDB storage and API responses. Create model factories for testing and data generation. Implement model versioning for backward compatibility.",
+            "status": "pending",
+            "testStrategy": ""
+          },
+          {
+            "id": 5,
+            "title": "Implement memory synchronization and consistency checks",
+            "description": "Create robust memory synchronization system between MongoDB snapshots and Mem0 long-term storage with consistency validation",
+            "dependencies": [
+              2,
+              4
+            ],
+            "details": "Implement sync_memories() method with bidirectional synchronization logic. Create memory consistency checker that validates data integrity between MongoDB and Mem0. Add conflict resolution strategies for divergent memory states. Implement incremental sync with change detection and delta updates. Create memory snapshot mechanism for point-in-time recovery. Add monitoring and alerting for sync failures and consistency violations.",
+            "status": "pending",
+            "testStrategy": ""
+          },
+          {
+            "id": 6,
+            "title": "Implement concurrency control and race condition testing",
+            "description": "Create comprehensive concurrency control mechanisms and extensive testing suite for race conditions and concurrent state updates",
+            "dependencies": [
+              5
+            ],
+            "details": "Implement distributed locking mechanism for concurrent state updates using Redis or MongoDB. Create optimistic locking with version control for state modifications. Add retry logic with exponential backoff for lock contention. Implement comprehensive test suite for race conditions including concurrent state transitions, memory updates, and sync operations. Create load testing scenarios with multiple concurrent conversations. Add monitoring for lock contention and performance metrics.",
+            "status": "pending",
+            "testStrategy": ""
+          }
+        ]
       },
       {
         "id": 4,
@@ -344,7 +410,7 @@
     ],
     "metadata": {
       "created": "2025-07-11T05:23:57.016Z",
-      "updated": "2025-07-13T17:52:49.585Z",
+      "updated": "2025-07-13T22:03:45.513Z",
       "description": "Tasks for master context"
     }
   }

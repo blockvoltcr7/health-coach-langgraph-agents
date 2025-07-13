@@ -30,6 +30,21 @@ from app.db.mongodb.validators import (
 logger = logging.getLogger(__name__)
 
 
+def format_iso_date(dt: Optional[datetime] = None) -> str:
+    """Format datetime to ISO format with exactly 3 millisecond digits.
+    
+    Args:
+        dt: Datetime to format. If None, uses current UTC time.
+        
+    Returns:
+        str: ISO formatted date string (YYYY-MM-DDTHH:MM:SS.sssZ)
+    """
+    if dt is None:
+        dt = datetime.utcnow()
+    # Format with exactly 3 millisecond digits
+    return dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+
+
 class ChannelType(str, Enum):
     """Supported conversation channels."""
     INSTAGRAM_DM = "instagram_dm"
@@ -512,7 +527,7 @@ class ConversationSchema:
             "is_qualified": None,
             "stage_history": [{
                 "stage": SalesStage.LEAD.value,
-                "timestamp": now.isoformat() + "Z",
+                "timestamp": format_iso_date(now),
                 "notes": "Conversation initiated"
             }],
             "qualification": {
@@ -562,7 +577,7 @@ class ConversationSchema:
                 "context": {}
             },
             "agent_context": {
-                "assigned_at": now.isoformat() + "Z",
+                "assigned_at": format_iso_date(now),
                 "previous_agent": None,
                 "handoff_reason": None,
                 "interaction_count": 0
@@ -596,8 +611,8 @@ class ConversationSchema:
                 "engagement_score": 0.0
             },
             "metadata": enhanced_metadata,
-            "created_at": now.isoformat() + "Z",
-            "updated_at": now.isoformat() + "Z"
+            "created_at": format_iso_date(now),
+            "updated_at": format_iso_date(now)
         }
         
         # Add initial message if provided
@@ -605,7 +620,7 @@ class ConversationSchema:
             doc["messages"].append({
                 "role": MessageRole.USER.value,
                 "content": initial_message,
-                "timestamp": now.isoformat() + "Z"
+                "timestamp": format_iso_date(now)
             })
             doc["agent_metrics"]["total_messages"] = 1
             doc["agent_context"]["interaction_count"] = 1
@@ -745,7 +760,7 @@ class ConversationRepository(BaseRepository[Dict[str, Any]]):
             
         return self.find_many({
             "follow_up.required": True,
-            "follow_up.scheduled_date": {"$lte": before_date.isoformat() + "Z"}
+            "follow_up.scheduled_date": {"$lte": format_iso_date(before_date)}
         })
     
     def add_message(
@@ -797,10 +812,10 @@ class ConversationRepository(BaseRepository[Dict[str, Any]]):
                 "messages": {
                     "role": role,
                     "content": content,
-                    "timestamp": now.isoformat() + "Z"
+                    "timestamp": format_iso_date(now)
                 }
             },
-            "$set": {"updated_at": now.isoformat() + "Z"},
+            "$set": {"updated_at": format_iso_date(now)},
             "$inc": {
                 "agent_metrics.total_messages": 1,
                 "agent_context.interaction_count": 1
@@ -861,12 +876,12 @@ class ConversationRepository(BaseRepository[Dict[str, Any]]):
         update_query = {
             "$set": {
                 "sales_stage": new_stage,
-                "updated_at": now.isoformat() + "Z"
+                "updated_at": format_iso_date(now)
             },
             "$push": {
                 "stage_history": {
                     "stage": new_stage,
-                    "timestamp": now.isoformat() + "Z",
+                    "timestamp": format_iso_date(now),
                     "notes": notes
                 }
             }
@@ -886,7 +901,7 @@ class ConversationRepository(BaseRepository[Dict[str, Any]]):
         # Update is_qualified flag for qualified stage
         if new_stage == SalesStage.QUALIFIED.value:
             update_query["$set"]["is_qualified"] = True
-            update_query["$set"]["qualification.qualified_at"] = now.isoformat() + "Z"
+            update_query["$set"]["qualification.qualified_at"] = format_iso_date(now)
             update_query["$set"]["qualification.qualified_by"] = triggered_by
         
         return self.update_by_id(conversation_id, update_query)
@@ -930,7 +945,7 @@ class ConversationRepository(BaseRepository[Dict[str, Any]]):
                         "handoff_id": handoff_id,
                         "from_agent": from_agent,
                         "to_agent": to_agent,
-                        "timestamp": now.isoformat() + "Z",
+                        "timestamp": format_iso_date(now),
                         "reason": reason,
                         "trigger": {
                             "type": trigger_type,
@@ -952,8 +967,8 @@ class ConversationRepository(BaseRepository[Dict[str, Any]]):
                     "current_agent": to_agent,
                     "agent_context.previous_agent": from_agent,
                     "agent_context.handoff_reason": reason,
-                    "agent_context.assigned_at": now.isoformat() + "Z",
-                    "updated_at": now.isoformat() + "Z"
+                    "agent_context.assigned_at": format_iso_date(now),
+                    "updated_at": format_iso_date(now)
                 }
             }
         )
@@ -978,7 +993,7 @@ class ConversationRepository(BaseRepository[Dict[str, Any]]):
         Returns:
             UpdateResult: Result of the update
         """
-        update_dict = {"$set": {"updated_at": datetime.utcnow().isoformat() + "Z"}}
+        update_dict = {"$set": {"updated_at": format_iso_date()}}
         
         # Validate confidence scores in each info dict
         for info, name in [
@@ -1052,13 +1067,13 @@ class ConversationRepository(BaseRepository[Dict[str, Any]]):
             {
                 "$set": {
                     "follow_up.required": True,
-                    "follow_up.scheduled_date": scheduled_date.isoformat() + "Z",
+                    "follow_up.scheduled_date": format_iso_date(scheduled_date),
                     "follow_up.type": follow_up_type,
                     "follow_up.priority": priority,
                     "follow_up.assigned_agent": assigned_agent,
-                    "follow_up.final_attempt_date": final_date.isoformat() + "Z",
+                    "follow_up.final_attempt_date": format_iso_date(final_date),
                     "follow_up.context": context or {},
-                    "updated_at": datetime.utcnow().isoformat() + "Z"
+                    "updated_at": format_iso_date()
                 }
             }
         )
