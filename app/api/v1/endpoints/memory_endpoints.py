@@ -16,6 +16,7 @@ from app.mem0.mem0AsyncClient import (
     MemoryEntry,
     MemorySearchResult,
     MemoryConfig,
+    MemoryCategory,
     add_conversation_memory,
     search_user_memories,
     get_user_memory_context
@@ -456,4 +457,276 @@ async def memory_health_check(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory service health check failed"
+        )
+
+
+# Enhanced Memory Endpoints with Categorization and Importance Scoring
+
+class AddEnhancedMemoryRequest(BaseModel):
+    """Request model for adding enhanced memory with categorization."""
+    messages: List[Dict[str, str]] = Field(
+        ..., 
+        description="List of message dictionaries with 'role' and 'content' keys"
+    )
+    user_id: str = Field(..., description="User identifier")
+    category: Optional[MemoryCategory] = Field(
+        None,
+        description="Memory category (auto-detected if not provided)"
+    )
+    importance_score: float = Field(
+        1.0,
+        ge=0.0,
+        le=10.0,
+        description="Importance score (0-10)"
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, 
+        description="Optional additional metadata"
+    )
+
+
+class SearchEnhancedRequest(BaseModel):
+    """Request model for enhanced memory search with filters."""
+    query: str = Field(..., description="Search query")
+    user_id: str = Field(..., description="User identifier")
+    limit: int = Field(10, gt=0, le=100, description="Maximum results")
+    category: Optional[MemoryCategory] = Field(None, description="Filter by category")
+    min_importance_score: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=10.0,
+        description="Minimum importance score filter"
+    )
+
+
+class MemoryAnalyticsResponse(BaseModel):
+    """Response model for memory analytics."""
+    total_memories: int
+    categories: Dict[str, int]
+    avg_importance_score: float
+    avg_access_count: float
+    importance_distribution: Dict[str, int]
+    most_accessed: List[Dict[str, Any]]
+
+
+@router.post("/add-enhanced", response_model=MemoryResponse)
+async def add_enhanced_memory(
+    request: AddEnhancedMemoryRequest,
+    client: Mem0AsyncClientWrapper = Depends(get_memory_client)
+) -> MemoryResponse:
+    """Add a memory with categorization and importance scoring.
+    
+    Args:
+        request: Enhanced memory request
+        client: Mem0 client instance
+        
+    Returns:
+        MemoryResponse: Response with memory ID
+    """
+    try:
+        result = await client.add_memory(
+            messages=request.messages,
+            user_id=request.user_id,
+            metadata=request.metadata,
+            category=request.category,
+            importance_score=request.importance_score
+        )
+        
+        return MemoryResponse(
+            success=True,
+            message="Enhanced memory added successfully",
+            memory_id=result.get("id"),
+            data=result
+        )
+        
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to add enhanced memory: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to add enhanced memory"
+        )
+
+
+@router.post("/search-enhanced", response_model=MemoryListResponse)
+async def search_enhanced_memories(
+    request: SearchEnhancedRequest,
+    client: Mem0AsyncClientWrapper = Depends(get_memory_client)
+) -> MemoryListResponse:
+    """Search memories with category and importance filtering.
+    
+    Args:
+        request: Enhanced search request
+        client: Mem0 client instance
+        
+    Returns:
+        MemoryListResponse: List of matching memories
+    """
+    try:
+        search_result = await client.search_memories(
+            query=request.query,
+            user_id=request.user_id,
+            limit=request.limit,
+            category=request.category,
+            min_importance_score=request.min_importance_score
+        )
+        
+        return MemoryListResponse(
+            success=True,
+            message=f"Found {len(search_result.memories)} memories",
+            memories=[memory.model_dump() for memory in search_result.memories],
+            total_count=search_result.total_count
+        )
+        
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to search enhanced memories: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to search enhanced memories"
+        )
+
+
+@router.get("/by-importance/{user_id}", response_model=MemoryListResponse)
+async def get_memories_by_importance(
+    user_id: str,
+    limit: int = 20,
+    min_score: float = 0.0,
+    category: Optional[MemoryCategory] = None,
+    include_decay: bool = True,
+    client: Mem0AsyncClientWrapper = Depends(get_memory_client)
+) -> MemoryListResponse:
+    """Get memories sorted by importance score.
+    
+    Args:
+        user_id: User identifier
+        limit: Maximum number of memories
+        min_score: Minimum importance score
+        category: Optional category filter
+        include_decay: Whether to use effective score (with decay)
+        client: Mem0 client instance
+        
+    Returns:
+        MemoryListResponse: List of memories sorted by importance
+    """
+    try:
+        memories = await client.get_memories_by_importance(
+            user_id=user_id,
+            limit=limit,
+            min_score=min_score,
+            category=category,
+            include_decay=include_decay
+        )
+        
+        return MemoryListResponse(
+            success=True,
+            message=f"Retrieved {len(memories)} memories by importance",
+            memories=[memory.model_dump() for memory in memories],
+            total_count=len(memories)
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to get memories by importance: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get memories by importance"
+        )
+
+
+@router.get("/analytics/{user_id}", response_model=MemoryAnalyticsResponse)
+async def get_memory_analytics(
+    user_id: str,
+    client: Mem0AsyncClientWrapper = Depends(get_memory_client)
+) -> MemoryAnalyticsResponse:
+    """Get analytics about user's memories.
+    
+    Args:
+        user_id: User identifier
+        client: Mem0 client instance
+        
+    Returns:
+        MemoryAnalyticsResponse: Memory analytics
+    """
+    try:
+        analytics = await client.get_memory_analytics(user_id)
+        
+        if "error" in analytics:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Analytics error: {analytics['error']}"
+            )
+        
+        return MemoryAnalyticsResponse(**analytics)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get memory analytics: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get memory analytics"
+        )
+
+
+# MongoDB Snapshot Endpoints
+
+class SnapshotResponse(BaseModel):
+    """Response model for snapshot operations."""
+    success: bool
+    message: str
+    snapshot_id: Optional[str] = None
+    memory_count: int = 0
+    data: Optional[Dict[str, Any]] = None
+
+
+@router.post("/snapshot/{user_id}", response_model=SnapshotResponse)
+async def create_memory_snapshot(
+    user_id: str,
+    client: Mem0AsyncClientWrapper = Depends(get_memory_client)
+) -> SnapshotResponse:
+    """Create a MongoDB snapshot of user memories.
+    
+    Note: This endpoint requires MongoDB snapshot repository to be configured.
+    
+    Args:
+        user_id: User identifier
+        client: Mem0 client instance
+        
+    Returns:
+        SnapshotResponse: Snapshot creation result
+    """
+    try:
+        # For now, we'll sync without repository (just demonstrate the functionality)
+        # In production, you would inject the MemorySnapshotRepository
+        result = await client.sync_to_mongodb(user_id, snapshot_repository=None)
+        
+        if result["success"]:
+            return SnapshotResponse(
+                success=True,
+                message="Memory snapshot created successfully",
+                memory_count=result["memory_count"],
+                data=result
+            )
+        else:
+            return SnapshotResponse(
+                success=False,
+                message=result.get("message", "Snapshot creation failed"),
+                memory_count=0
+            )
+            
+    except Exception as e:
+        logger.error(f"Failed to create memory snapshot: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create memory snapshot"
         ) 

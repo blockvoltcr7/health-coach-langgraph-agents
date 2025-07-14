@@ -8,9 +8,10 @@ multiple APIs and services.
 import os
 import logging
 from typing import Dict, List, Optional, Any, Union
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import asyncio
 from contextlib import asynccontextmanager
+from enum import Enum
 
 try:
     from mem0 import AsyncMemoryClient
@@ -19,7 +20,7 @@ except ImportError:
     MEM0_AVAILABLE = False
     AsyncMemoryClient = None
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -28,14 +29,50 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+class MemoryCategory(str, Enum):
+    """Categories for memory classification."""
+    FACT = "fact"  # Factual information about the user
+    PREFERENCE = "preference"  # User preferences and likes/dislikes
+    OBJECTION = "objection"  # Sales objections and concerns
+    OUTCOME = "outcome"  # Conversation outcomes and decisions
+    CONTEXT = "context"  # General contextual information
+    QUALIFICATION = "qualification"  # BANT qualification data
+
+
 class MemoryEntry(BaseModel):
-    """Pydantic model for memory entries."""
+    """Enhanced Pydantic model for memory entries with categorization and scoring."""
     id: Optional[str] = None
     memory: str = Field(..., description="The memory content")
     user_id: str = Field(..., description="User identifier")
+    category: Optional[MemoryCategory] = Field(None, description="Memory category")
+    importance_score: float = Field(1.0, ge=0.0, le=10.0, description="Importance score (0-10)")
+    access_count: int = Field(0, ge=0, description="Number of times accessed")
+    last_accessed: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    
+    @property
+    def decay_factor(self) -> float:
+        """Calculate decay factor based on time since last access."""
+        if not self.last_accessed:
+            return 1.0
+        
+        days_since_access = (datetime.now(timezone.utc) - self.last_accessed).days
+        # Decay formula: score * (0.95 ^ days_since_access)
+        return 0.95 ** days_since_access
+    
+    @property
+    def effective_score(self) -> float:
+        """Calculate effective importance score with decay."""
+        return self.importance_score * self.decay_factor
+    
+    def update_access(self) -> None:
+        """Update access count and timestamp."""
+        self.access_count += 1
+        self.last_accessed = datetime.now(timezone.utc)
+        # Boost importance slightly on access
+        self.importance_score = min(10.0, self.importance_score * 1.05)
 
 
 class MemorySearchResult(BaseModel):
@@ -115,18 +152,61 @@ class Mem0AsyncClientWrapper:
                     logger.warning(f"Operation {operation_name} attempt {attempt + 1} failed: {e}. Retrying...")
                     await asyncio.sleep(2 ** attempt)  # Exponential backoff
     
+    def _auto_categorize_memory(self, messages: List[Dict[str, str]]) -> MemoryCategory:
+        """Auto-categorize memory based on content analysis.
+        
+        Args:
+            messages: List of message dictionaries
+            
+        Returns:
+            MemoryCategory: Best matching category
+        """
+        # Combine all message content for analysis
+        combined_content = " ".join(msg["content"].lower() for msg in messages)
+        
+        # Keywords for each category
+        objection_keywords = ["expensive", "cost", "price", "budget", "concern", "worry", 
+                            "not sure", "doubt", "problem", "issue", "difficult"]
+        preference_keywords = ["like", "prefer", "want", "need", "love", "hate", 
+                             "enjoy", "favorite", "dislike", "wish"]
+        qualification_keywords = ["budget", "timeline", "authority", "decision", 
+                                "approve", "purchase", "buy", "invest"]
+        outcome_keywords = ["decided", "agreed", "accepted", "rejected", "closed",
+                           "deal", "contract", "signed", "committed"]
+        fact_keywords = ["work", "company", "years", "experience", "currently",
+                        "responsible", "manage", "department", "team"]
+        
+        # Count keyword matches
+        scores = {
+            MemoryCategory.OBJECTION: sum(1 for kw in objection_keywords if kw in combined_content),
+            MemoryCategory.PREFERENCE: sum(1 for kw in preference_keywords if kw in combined_content),
+            MemoryCategory.QUALIFICATION: sum(1 for kw in qualification_keywords if kw in combined_content),
+            MemoryCategory.OUTCOME: sum(1 for kw in outcome_keywords if kw in combined_content),
+            MemoryCategory.FACT: sum(1 for kw in fact_keywords if kw in combined_content),
+        }
+        
+        # Return category with highest score, default to CONTEXT
+        max_score = max(scores.values())
+        if max_score > 0:
+            return max(scores, key=scores.get)
+        return MemoryCategory.CONTEXT
+    
     async def add_memory(
         self,
         messages: List[Dict[str, str]],
         user_id: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        category: Optional[MemoryCategory] = None,
+        importance_score: float = 1.0
     ) -> Dict[str, Any]:
-        """Add a new memory entry.
+        """Add a new memory entry with categorization and importance scoring.
         
         Args:
             messages: List of message dictionaries with 'role' and 'content' keys
             user_id: User identifier for the memory
             metadata: Optional additional metadata
+            category: Memory category (fact, preference, objection, etc.)
+            importance_score: Initial importance score (0-10)
             
         Returns:
             Dict[str, Any]: Response from mem0 API
@@ -147,16 +227,30 @@ class Mem0AsyncClientWrapper:
             if not isinstance(msg, dict) or 'role' not in msg or 'content' not in msg:
                 raise ValueError("Each message must be a dict with 'role' and 'content' keys")
         
+        # Enhance metadata with category and scoring
+        enhanced_metadata = metadata or {}
+        if category:
+            enhanced_metadata["category"] = category.value
+        enhanced_metadata["importance_score"] = max(0.0, min(10.0, importance_score))
+        enhanced_metadata["access_count"] = 1
+        enhanced_metadata["last_accessed"] = datetime.now(timezone.utc).isoformat()
+        
+        # Auto-categorize based on content if no category provided
+        if not category:
+            category = self._auto_categorize_memory(messages)
+            enhanced_metadata["category"] = category.value
+            enhanced_metadata["auto_categorized"] = True
+        
         async with self._with_retries("add_memory"):
             try:
                 result = await self._client.add(
                     messages=messages,
                     user_id=user_id,
                     output_format=self.config.output_format,
-                    metadata=metadata or {}
+                    metadata=enhanced_metadata
                 )
                 
-                logger.info(f"Successfully added memory for user {user_id}")
+                logger.info(f"Successfully added {category.value} memory for user {user_id}")
                 return result
                 
             except Exception as e:
@@ -168,15 +262,19 @@ class Mem0AsyncClientWrapper:
         query: str,
         user_id: str,
         limit: int = 10,
-        metadata_filter: Optional[Dict[str, Any]] = None
+        metadata_filter: Optional[Dict[str, Any]] = None,
+        category: Optional[MemoryCategory] = None,
+        min_importance_score: Optional[float] = None
     ) -> MemorySearchResult:
-        """Search memories for a specific user.
+        """Search memories for a specific user with category and importance filtering.
         
         Args:
             query: Search query string
             user_id: User identifier
             limit: Maximum number of results to return
             metadata_filter: Optional metadata filter
+            category: Optional category filter
+            min_importance_score: Optional minimum importance score filter
             
         Returns:
             MemorySearchResult: Structured search results
@@ -208,15 +306,42 @@ class Mem0AsyncClientWrapper:
                 
                 for mem in memory_list:
                     if isinstance(mem, dict):
+                        mem_metadata = mem.get("metadata", {})
+                        
+                        # Extract enhanced fields from metadata
+                        mem_category = mem_metadata.get("category", "context")
+                        try:
+                            mem_category_enum = MemoryCategory(mem_category)
+                        except ValueError:
+                            mem_category_enum = MemoryCategory.CONTEXT
+                        
+                        importance_score = float(mem_metadata.get("importance_score", 1.0))
+                        
+                        # Apply filters
+                        if category and mem_category_enum != category:
+                            continue
+                        if min_importance_score and importance_score < min_importance_score:
+                            continue
+                        
                         memory_entry = MemoryEntry(
                             id=mem.get("id"),
                             memory=mem.get("memory", ""),
                             user_id=user_id,
+                            category=mem_category_enum,
+                            importance_score=importance_score,
+                            access_count=mem_metadata.get("access_count", 0),
+                            last_accessed=mem_metadata.get("last_accessed"),
                             created_at=mem.get("created_at"),
                             updated_at=mem.get("updated_at"),
-                            metadata=mem.get("metadata", {})
+                            metadata=mem_metadata
                         )
+                        
+                        # Update access on retrieval
+                        memory_entry.update_access()
                         memories.append(memory_entry)
+                
+                # Sort by effective score (importance with decay)
+                memories.sort(key=lambda m: m.effective_score, reverse=True)
                 
                 search_result = MemorySearchResult(
                     memories=memories,
@@ -263,13 +388,26 @@ class Mem0AsyncClientWrapper:
                 
                 for mem in memory_list:
                     if isinstance(mem, dict):
+                        mem_metadata = mem.get("metadata", {})
+                        
+                        # Extract enhanced fields from metadata
+                        mem_category = mem_metadata.get("category", "context")
+                        try:
+                            mem_category_enum = MemoryCategory(mem_category)
+                        except ValueError:
+                            mem_category_enum = MemoryCategory.CONTEXT
+                        
                         memory_entry = MemoryEntry(
                             id=mem.get("id"),
                             memory=mem.get("memory", ""),
                             user_id=user_id,
+                            category=mem_category_enum,
+                            importance_score=float(mem_metadata.get("importance_score", 1.0)),
+                            access_count=mem_metadata.get("access_count", 0),
+                            last_accessed=mem_metadata.get("last_accessed"),
                             created_at=mem.get("created_at"),
                             updated_at=mem.get("updated_at"),
-                            metadata=mem.get("metadata", {})
+                            metadata=mem_metadata
                         )
                         memories.append(memory_entry)
                 
@@ -279,6 +417,47 @@ class Mem0AsyncClientWrapper:
             except Exception as e:
                 logger.error(f"Failed to get all memories for user {user_id}: {e}")
                 raise
+    
+    async def get_memories_by_importance(
+        self,
+        user_id: str,
+        limit: int = 20,
+        min_score: float = 0.0,
+        category: Optional[MemoryCategory] = None,
+        include_decay: bool = True
+    ) -> List[MemoryEntry]:
+        """Get memories sorted by importance score with optional filtering.
+        
+        Args:
+            user_id: User identifier
+            limit: Maximum number of memories to return
+            min_score: Minimum importance score (0-10)
+            category: Optional category filter
+            include_decay: Whether to use effective score (with decay) or raw score
+            
+        Returns:
+            List[MemoryEntry]: Memories sorted by importance
+        """
+        memories = await self.get_all_memories(user_id)
+        
+        # Apply filters
+        filtered_memories = []
+        for mem in memories:
+            if category and mem.category != category:
+                continue
+            
+            score = mem.effective_score if include_decay else mem.importance_score
+            if score >= min_score:
+                filtered_memories.append(mem)
+        
+        # Sort by score
+        if include_decay:
+            filtered_memories.sort(key=lambda m: m.effective_score, reverse=True)
+        else:
+            filtered_memories.sort(key=lambda m: m.importance_score, reverse=True)
+        
+        # Return limited results
+        return filtered_memories[:limit]
     
     async def update_memory(
         self,
@@ -437,6 +616,230 @@ class Mem0AsyncClientWrapper:
                 "message": "Memory service is experiencing issues"
             }
     
+    async def sync_to_mongodb(
+        self,
+        user_id: str,
+        snapshot_repository: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """Sync user memories to MongoDB as a snapshot.
+        
+        Args:
+            user_id: User identifier
+            snapshot_repository: Optional MemorySnapshotRepository instance
+            
+        Returns:
+            Dict with sync results
+        """
+        try:
+            # Get all memories for user
+            memories = await self.get_all_memories(user_id)
+            
+            if not memories:
+                return {
+                    "success": False,
+                    "message": "No memories found for user",
+                    "memory_count": 0
+                }
+            
+            # Convert memories to MongoDB format
+            mongo_memories = []
+            for mem in memories:
+                mongo_memory = {
+                    "memory_id": mem.id,
+                    "content": mem.memory,
+                    "category": mem.category.value if mem.category else "context",
+                    "importance_score": mem.importance_score,
+                    "access_count": mem.access_count,
+                    "last_accessed": mem.last_accessed,
+                    "created_at": mem.created_at,
+                    "updated_at": mem.updated_at,
+                    "metadata": mem.metadata
+                }
+                mongo_memories.append(mongo_memory)
+            
+            # Create snapshot in MongoDB if repository provided
+            snapshot_id = None
+            if snapshot_repository:
+                from app.db.mongodb.schemas.memory_snapshot_schema import SnapshotStatus
+                snapshot_id = snapshot_repository.create_snapshot(
+                    user_id=user_id,
+                    memories=mongo_memories,
+                    status=SnapshotStatus.COMPLETED
+                )
+            
+            logger.info(f"Successfully synced {len(memories)} memories for user {user_id}")
+            
+            return {
+                "success": True,
+                "memory_count": len(memories),
+                "snapshot_id": snapshot_id,
+                "categories": {
+                    cat.value: sum(1 for m in memories if m.category == cat)
+                    for cat in MemoryCategory
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to sync memories to MongoDB: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "memory_count": 0
+            }
+    
+    async def restore_from_mongodb(
+        self,
+        user_id: str,
+        snapshot_id: str,
+        snapshot_repository: Any,
+        clear_existing: bool = False
+    ) -> Dict[str, Any]:
+        """Restore memories from a MongoDB snapshot.
+        
+        Args:
+            user_id: User identifier
+            snapshot_id: Snapshot ID to restore from
+            snapshot_repository: MemorySnapshotRepository instance
+            clear_existing: Whether to clear existing memories first
+            
+        Returns:
+            Dict with restore results
+        """
+        try:
+            # Get snapshot from MongoDB
+            snapshot = snapshot_repository.find_by_id(snapshot_id)
+            if not snapshot:
+                return {
+                    "success": False,
+                    "error": "Snapshot not found"
+                }
+            
+            # Verify user ID matches
+            if snapshot["user_id"] != user_id:
+                return {
+                    "success": False,
+                    "error": "User ID mismatch"
+                }
+            
+            # Clear existing memories if requested
+            if clear_existing:
+                await self.delete_all_memories(user_id)
+                logger.info(f"Cleared existing memories for user {user_id}")
+            
+            # Restore memories
+            restored_count = 0
+            errors = []
+            
+            for mongo_mem in snapshot.get("memories", []):
+                try:
+                    # Reconstruct conversation format
+                    messages = [
+                        {"role": "user", "content": "Restored memory"},
+                        {"role": "assistant", "content": mongo_mem["content"]}
+                    ]
+                    
+                    # Restore with original metadata
+                    await self.add_memory(
+                        messages=messages,
+                        user_id=user_id,
+                        metadata=mongo_mem.get("metadata", {}),
+                        category=MemoryCategory(mongo_mem.get("category", "context")),
+                        importance_score=mongo_mem.get("importance_score", 1.0)
+                    )
+                    restored_count += 1
+                    
+                except Exception as e:
+                    errors.append(f"Memory {mongo_mem.get('memory_id', 'unknown')}: {str(e)}")
+            
+            logger.info(f"Restored {restored_count} memories for user {user_id}")
+            
+            return {
+                "success": True,
+                "restored_count": restored_count,
+                "total_in_snapshot": len(snapshot.get("memories", [])),
+                "errors": errors,
+                "snapshot_date": snapshot["snapshot_timestamp"].isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to restore memories from MongoDB: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "restored_count": 0
+            }
+    
+    async def get_memory_analytics(
+        self,
+        user_id: str
+    ) -> Dict[str, Any]:
+        """Get analytics about user's memories.
+        
+        Args:
+            user_id: User identifier
+            
+        Returns:
+            Dict containing memory analytics
+        """
+        try:
+            memories = await self.get_all_memories(user_id)
+            
+            if not memories:
+                return {
+                    "total_memories": 0,
+                    "categories": {},
+                    "avg_importance_score": 0,
+                    "avg_access_count": 0
+                }
+            
+            # Calculate analytics
+            categories = {}
+            total_importance = 0
+            total_access = 0
+            
+            for mem in memories:
+                # Category breakdown
+                cat = mem.category.value if mem.category else "context"
+                categories[cat] = categories.get(cat, 0) + 1
+                
+                # Averages
+                total_importance += mem.importance_score
+                total_access += mem.access_count
+            
+            # Calculate importance distribution
+            importance_dist = {
+                "high": sum(1 for m in memories if m.importance_score >= 7),
+                "medium": sum(1 for m in memories if 3 <= m.importance_score < 7),
+                "low": sum(1 for m in memories if m.importance_score < 3)
+            }
+            
+            # Most accessed memories
+            most_accessed = sorted(memories, key=lambda m: m.access_count, reverse=True)[:5]
+            
+            return {
+                "total_memories": len(memories),
+                "categories": categories,
+                "avg_importance_score": round(total_importance / len(memories), 2),
+                "avg_access_count": round(total_access / len(memories), 2),
+                "importance_distribution": importance_dist,
+                "most_accessed": [
+                    {
+                        "memory": m.memory[:100] + "..." if len(m.memory) > 100 else m.memory,
+                        "access_count": m.access_count,
+                        "importance_score": m.importance_score
+                    }
+                    for m in most_accessed
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get memory analytics: {e}")
+            return {
+                "error": str(e),
+                "total_memories": 0
+            }
+    
     async def close(self) -> None:
         """Close the client connection."""
         if self._client:
@@ -484,15 +887,19 @@ async def add_conversation_memory(
     user_message: str,
     assistant_message: str,
     user_id: str,
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    category: Optional[MemoryCategory] = None,
+    importance_score: float = 1.0
 ) -> Dict[str, Any]:
-    """Convenience function to add a conversation to memory.
+    """Convenience function to add a conversation to memory with categorization.
     
     Args:
         user_message: The user's message
         assistant_message: The assistant's response
         user_id: User identifier
         metadata: Optional metadata
+        category: Memory category (auto-detected if not provided)
+        importance_score: Initial importance score (0-10)
         
     Returns:
         Dict[str, Any]: Response from mem0 API
@@ -502,26 +909,30 @@ async def add_conversation_memory(
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": assistant_message}
     ]
-    return await client.add_memory(messages, user_id, metadata)
+    return await client.add_memory(messages, user_id, metadata, category, importance_score)
 
 
 async def search_user_memories(
     query: str,
     user_id: str,
-    limit: int = 10
+    limit: int = 10,
+    category: Optional[MemoryCategory] = None,
+    min_importance_score: Optional[float] = None
 ) -> MemorySearchResult:
-    """Convenience function to search user memories.
+    """Convenience function to search user memories with filtering.
     
     Args:
         query: Search query
         user_id: User identifier
         limit: Maximum results
+        category: Optional category filter
+        min_importance_score: Optional minimum importance score
         
     Returns:
         MemorySearchResult: Search results
     """
     client = await get_mem0_client()
-    return await client.search_memories(query, user_id, limit)
+    return await client.search_memories(query, user_id, limit, None, category, min_importance_score)
 
 
 async def get_user_memory_context(user_id: str, limit: int = 20) -> str:

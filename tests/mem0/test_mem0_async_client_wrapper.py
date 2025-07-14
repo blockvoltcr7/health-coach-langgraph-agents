@@ -15,6 +15,7 @@ from app.mem0.mem0AsyncClient import (
     MemoryConfig,
     MemoryEntry,
     MemorySearchResult,
+    MemoryCategory,
     get_mem0_client,
     add_conversation_memory,
     search_user_memories,
@@ -531,4 +532,504 @@ class TestDataModels:
         with allure.step("Test auto-loading API key from environment"):
             with patch.dict('os.environ', {'MEM0_API_KEY': 'env_test_key'}):
                 config = MemoryConfig()
-                assert config.api_key == 'env_test_key' 
+                assert config.api_key == 'env_test_key'
+
+
+@allure.epic("Memory Management")
+@allure.feature("Enhanced Memory Features")
+class TestEnhancedMemoryFeatures:
+    """Test class for enhanced memory features including categorization and scoring."""
+    
+    @pytest.fixture
+    async def client_wrapper(self) -> Mem0AsyncClientWrapper:
+        """Create a client wrapper instance for testing."""
+        with patch('app.mem0.mem0AsyncClient.AsyncMemoryClient') as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client_class.return_value = mock_client
+            
+            config = MemoryConfig(api_key="test_key")
+            wrapper = Mem0AsyncClientWrapper(config)
+            await wrapper._ensure_initialized()
+            return wrapper
+    
+    @allure.story("Memory Categorization")
+    @allure.severity(allure.severity_level.CRITICAL)
+    def test_memory_category_enum(self):
+        """Test MemoryCategory enum values."""
+        with allure.step("Verify all category values"):
+            assert MemoryCategory.FACT.value == "fact"
+            assert MemoryCategory.PREFERENCE.value == "preference"
+            assert MemoryCategory.OBJECTION.value == "objection"
+            assert MemoryCategory.OUTCOME.value == "outcome"
+            assert MemoryCategory.CONTEXT.value == "context"
+            assert MemoryCategory.QUALIFICATION.value == "qualification"
+    
+    @allure.story("Memory Entry Enhancement")
+    @allure.severity(allure.severity_level.CRITICAL)
+    def test_enhanced_memory_entry_model(self):
+        """Test enhanced MemoryEntry with category and scoring."""
+        with allure.step("Create enhanced memory entry"):
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc)
+            
+            entry = MemoryEntry(
+                id="mem_123",
+                memory="User has a budget of $50,000",
+                user_id="user_123",
+                category=MemoryCategory.QUALIFICATION,
+                importance_score=8.5,
+                access_count=5,
+                last_accessed=now - timedelta(days=2),
+                created_at=now - timedelta(days=10),
+                metadata={"source": "sales_call"}
+            )
+            
+            assert entry.category == MemoryCategory.QUALIFICATION
+            assert entry.importance_score == 8.5
+            assert entry.access_count == 5
+            assert entry.last_accessed < now
+    
+    @allure.story("Decay Factor Calculation")
+    @allure.severity(allure.severity_level.NORMAL)
+    def test_memory_decay_factor_calculation(self):
+        """Test decay factor calculation based on last access time."""
+        from datetime import datetime, timezone, timedelta
+        
+        with allure.step("Test fresh memory (0 days old)"):
+            entry = MemoryEntry(
+                memory="Fresh memory",
+                user_id="user_123",
+                importance_score=5.0,
+                last_accessed=datetime.now(timezone.utc)
+            )
+            assert entry.decay_factor == 1.0
+            assert entry.effective_score == 5.0
+        
+        with allure.step("Test 5-day old memory"):
+            old_entry = MemoryEntry(
+                memory="Old memory",
+                user_id="user_123",
+                importance_score=5.0,
+                last_accessed=datetime.now(timezone.utc) - timedelta(days=5)
+            )
+            expected_decay = 0.95 ** 5
+            assert abs(old_entry.decay_factor - expected_decay) < 0.001
+            assert abs(old_entry.effective_score - (5.0 * expected_decay)) < 0.01
+        
+        with allure.step("Test memory without last_accessed"):
+            no_access_entry = MemoryEntry(
+                memory="Never accessed",
+                user_id="user_123",
+                importance_score=5.0
+            )
+            assert no_access_entry.decay_factor == 1.0
+    
+    @allure.story("Access Count Update")
+    @allure.severity(allure.severity_level.NORMAL)
+    def test_memory_access_update(self):
+        """Test memory access count and timestamp update."""
+        from datetime import datetime, timezone
+        
+        with allure.step("Create memory and update access"):
+            entry = MemoryEntry(
+                memory="Test memory",
+                user_id="user_123",
+                importance_score=5.0,
+                access_count=0
+            )
+            
+            original_count = entry.access_count
+            original_score = entry.importance_score
+            
+            entry.update_access()
+            
+            assert entry.access_count == original_count + 1
+            assert entry.importance_score == min(10.0, original_score * 1.05)
+            assert entry.last_accessed is not None
+            assert isinstance(entry.last_accessed, datetime)
+    
+    @allure.story("Auto-Categorization")
+    @allure.severity(allure.severity_level.CRITICAL)
+    async def test_auto_categorize_memory(self, client_wrapper: Mem0AsyncClientWrapper):
+        """Test automatic memory categorization based on content."""
+        test_cases = [
+            # (messages, expected_category)
+            ([
+                {"role": "user", "content": "I have a budget of $50,000 for this project"},
+                {"role": "assistant", "content": "Great, $50,000 budget noted"}
+            ], MemoryCategory.QUALIFICATION),
+            
+            ([
+                {"role": "user", "content": "I prefer morning meetings"},
+                {"role": "assistant", "content": "I'll remember you prefer morning meetings"}
+            ], MemoryCategory.PREFERENCE),
+            
+            ([
+                {"role": "user", "content": "I'm concerned about the price, it seems expensive"},
+                {"role": "assistant", "content": "I understand your concern about pricing"}
+            ], MemoryCategory.OBJECTION),
+            
+            ([
+                {"role": "user", "content": "We've decided to move forward with the contract"},
+                {"role": "assistant", "content": "Excellent decision!"}
+            ], MemoryCategory.OUTCOME),
+            
+            ([
+                {"role": "user", "content": "I work as a software engineer at Google"},
+                {"role": "assistant", "content": "Software engineer at Google, got it"}
+            ], MemoryCategory.FACT),
+            
+            ([
+                {"role": "user", "content": "Hello, how are you?"},
+                {"role": "assistant", "content": "I'm doing well, thank you!"}
+            ], MemoryCategory.CONTEXT)
+        ]
+        
+        for messages, expected_category in test_cases:
+            with allure.step(f"Test categorization for {expected_category.value}"):
+                category = client_wrapper._auto_categorize_memory(messages)
+                assert category == expected_category, f"Expected {expected_category}, got {category}"
+    
+    @allure.story("Enhanced Memory Addition")
+    @allure.severity(allure.severity_level.CRITICAL)
+    async def test_add_memory_with_category_and_score(self, client_wrapper: Mem0AsyncClientWrapper):
+        """Test adding memory with category and importance score."""
+        with allure.step("Prepare test data"):
+            messages = [
+                {"role": "user", "content": "My budget is $100,000"},
+                {"role": "assistant", "content": "$100,000 budget noted"}
+            ]
+            user_id = "test_user_123"
+            
+            expected_result = {"id": "mem_enhanced_123", "status": "success"}
+            client_wrapper._client.add.return_value = expected_result
+        
+        with allure.step("Add memory with explicit category and score"):
+            result = await client_wrapper.add_memory(
+                messages=messages,
+                user_id=user_id,
+                category=MemoryCategory.QUALIFICATION,
+                importance_score=9.0
+            )
+            
+            assert result == expected_result
+            
+            # Verify the metadata was enhanced correctly
+            call_args = client_wrapper._client.add.call_args
+            metadata = call_args.kwargs["metadata"]
+            assert metadata["category"] == "qualification"
+            assert metadata["importance_score"] == 9.0
+            assert metadata["access_count"] == 1
+            assert "last_accessed" in metadata
+            assert "auto_categorized" not in metadata
+    
+    @allure.story("Enhanced Memory Search")
+    @allure.severity(allure.severity_level.CRITICAL)
+    async def test_search_memories_with_filters(self, client_wrapper: Mem0AsyncClientWrapper):
+        """Test searching memories with category and importance filters."""
+        with allure.step("Prepare mock response"):
+            mock_response = {
+                "memories": [
+                    {
+                        "id": "mem_1",
+                        "memory": "High importance qualification",
+                        "metadata": {
+                            "category": "qualification",
+                            "importance_score": 8.5,
+                            "access_count": 3
+                        }
+                    },
+                    {
+                        "id": "mem_2",
+                        "memory": "Low importance context",
+                        "metadata": {
+                            "category": "context",
+                            "importance_score": 2.0,
+                            "access_count": 1
+                        }
+                    },
+                    {
+                        "id": "mem_3",
+                        "memory": "Medium importance preference",
+                        "metadata": {
+                            "category": "preference",
+                            "importance_score": 5.0,
+                            "access_count": 2
+                        }
+                    }
+                ]
+            }
+            client_wrapper._client.search.return_value = mock_response
+        
+        with allure.step("Search with category filter"):
+            result = await client_wrapper.search_memories(
+                query="test",
+                user_id="user_123",
+                category=MemoryCategory.QUALIFICATION
+            )
+            
+            assert len(result.memories) == 1
+            assert result.memories[0].category == MemoryCategory.QUALIFICATION
+        
+        with allure.step("Search with importance score filter"):
+            client_wrapper._client.search.return_value = mock_response
+            result = await client_wrapper.search_memories(
+                query="test",
+                user_id="user_123",
+                min_importance_score=5.0
+            )
+            
+            # Should return memories with score >= 5.0
+            assert len(result.memories) == 2
+            assert all(m.importance_score >= 5.0 for m in result.memories)
+    
+    @allure.story("Get Memories by Importance")
+    @allure.severity(allure.severity_level.NORMAL)
+    async def test_get_memories_by_importance(self, client_wrapper: Mem0AsyncClientWrapper):
+        """Test retrieving memories sorted by importance."""
+        from datetime import datetime, timezone, timedelta
+        
+        with allure.step("Mock get_all_memories response"):
+            mock_memories = [
+                MemoryEntry(
+                    id="mem_1",
+                    memory="Very important",
+                    user_id="user_123",
+                    category=MemoryCategory.QUALIFICATION,
+                    importance_score=9.0,
+                    last_accessed=datetime.now(timezone.utc)
+                ),
+                MemoryEntry(
+                    id="mem_2",
+                    memory="Less important",
+                    user_id="user_123",
+                    category=MemoryCategory.CONTEXT,
+                    importance_score=3.0,
+                    last_accessed=datetime.now(timezone.utc) - timedelta(days=10)
+                ),
+                MemoryEntry(
+                    id="mem_3",
+                    memory="Medium importance",
+                    user_id="user_123",
+                    category=MemoryCategory.PREFERENCE,
+                    importance_score=6.0,
+                    last_accessed=datetime.now(timezone.utc) - timedelta(days=2)
+                )
+            ]
+            
+            # Mock the get_all_memories method
+            client_wrapper.get_all_memories = AsyncMock(return_value=mock_memories)
+        
+        with allure.step("Get memories by importance with decay"):
+            result = await client_wrapper.get_memories_by_importance(
+                user_id="user_123",
+                limit=2,
+                min_score=2.0,
+                include_decay=True
+            )
+            
+            assert len(result) == 2
+            # First should be the 9.0 score (fresh)
+            assert result[0].importance_score == 9.0
+            # Second should be the 6.0 score (2 days old, so some decay)
+            assert result[1].importance_score == 6.0
+        
+        with allure.step("Get memories by importance without decay"):
+            result = await client_wrapper.get_memories_by_importance(
+                user_id="user_123",
+                limit=3,
+                include_decay=False
+            )
+            
+            assert len(result) == 3
+            # Should be sorted by raw importance score
+            assert result[0].importance_score == 9.0
+            assert result[1].importance_score == 6.0
+            assert result[2].importance_score == 3.0
+        
+        with allure.step("Filter by category"):
+            result = await client_wrapper.get_memories_by_importance(
+                user_id="user_123",
+                category=MemoryCategory.QUALIFICATION,
+                limit=10
+            )
+            
+            assert len(result) == 1
+            assert result[0].category == MemoryCategory.QUALIFICATION
+    
+    @allure.story("Memory Analytics")
+    @allure.severity(allure.severity_level.NORMAL)
+    async def test_get_memory_analytics(self, client_wrapper: Mem0AsyncClientWrapper):
+        """Test memory analytics calculation."""
+        with allure.step("Mock memories for analytics"):
+            mock_memories = [
+                MemoryEntry(
+                    id=f"mem_{i}",
+                    memory=f"Memory {i}",
+                    user_id="user_123",
+                    category=MemoryCategory.FACT if i < 3 else MemoryCategory.PREFERENCE,
+                    importance_score=float(i + 1),
+                    access_count=i * 2
+                )
+                for i in range(5)
+            ]
+            
+            client_wrapper.get_all_memories = AsyncMock(return_value=mock_memories)
+        
+        with allure.step("Get analytics"):
+            analytics = await client_wrapper.get_memory_analytics("user_123")
+            
+            assert analytics["total_memories"] == 5
+            assert analytics["categories"]["fact"] == 3
+            assert analytics["categories"]["preference"] == 2
+            assert analytics["avg_importance_score"] == 3.0  # (1+2+3+4+5)/5
+            assert analytics["avg_access_count"] == 4.0  # (0+2+4+6+8)/5
+            assert analytics["importance_distribution"]["high"] == 0  # None >= 7
+            assert analytics["importance_distribution"]["medium"] == 3  # 3,4,5 are [3,7)
+            assert analytics["importance_distribution"]["low"] == 2  # 1,2 are < 3
+            assert len(analytics["most_accessed"]) == 5
+        
+        with allure.step("Test empty analytics"):
+            client_wrapper.get_all_memories = AsyncMock(return_value=[])
+            empty_analytics = await client_wrapper.get_memory_analytics("user_123")
+            
+            assert empty_analytics["total_memories"] == 0
+            assert empty_analytics["categories"] == {}
+            assert empty_analytics["avg_importance_score"] == 0
+            assert empty_analytics["avg_access_count"] == 0
+    
+    @allure.story("MongoDB Sync")
+    @allure.severity(allure.severity_level.CRITICAL)
+    async def test_sync_to_mongodb(self, client_wrapper: Mem0AsyncClientWrapper):
+        """Test syncing memories to MongoDB."""
+        from datetime import datetime, timezone
+        
+        with allure.step("Mock memories to sync"):
+            mock_memories = [
+                MemoryEntry(
+                    id="mem_1",
+                    memory="Budget is $50k",
+                    user_id="user_123",
+                    category=MemoryCategory.QUALIFICATION,
+                    importance_score=8.0,
+                    access_count=2,
+                    last_accessed=datetime.now(timezone.utc),
+                    created_at=datetime.now(timezone.utc),
+                    metadata={"source": "chat"}
+                )
+            ]
+            
+            client_wrapper.get_all_memories = AsyncMock(return_value=mock_memories)
+        
+        with allure.step("Sync without repository (test mode)"):
+            result = await client_wrapper.sync_to_mongodb("user_123", None)
+            
+            assert result["success"] is True
+            assert result["memory_count"] == 1
+            assert result["categories"]["qualification"] == 1
+            assert "timestamp" in result
+        
+        with allure.step("Test sync with no memories"):
+            client_wrapper.get_all_memories = AsyncMock(return_value=[])
+            result = await client_wrapper.sync_to_mongodb("user_123", None)
+            
+            assert result["success"] is False
+            assert result["message"] == "No memories found for user"
+            assert result["memory_count"] == 0
+    
+    @allure.story("MongoDB Restore")
+    @allure.severity(allure.severity_level.CRITICAL)
+    async def test_restore_from_mongodb(self, client_wrapper: Mem0AsyncClientWrapper):
+        """Test restoring memories from MongoDB snapshot."""
+        from datetime import datetime, timezone
+        
+        with allure.step("Mock snapshot repository"):
+            mock_repo = MagicMock()
+            mock_snapshot = {
+                "_id": "snapshot_123",
+                "user_id": "user_123",
+                "memories": [
+                    {
+                        "memory_id": "mem_1",
+                        "content": "Restored memory content",
+                        "category": "fact",
+                        "importance_score": 7.0,
+                        "metadata": {"restored": True}
+                    }
+                ],
+                "snapshot_timestamp": datetime.now(timezone.utc)
+            }
+            mock_repo.find_by_id.return_value = mock_snapshot
+        
+        with allure.step("Mock successful restoration"):
+            client_wrapper._client.add.return_value = {"id": "restored_mem_1"}
+            client_wrapper._client.delete_all.return_value = {"status": "deleted"}
+            
+            result = await client_wrapper.restore_from_mongodb(
+                user_id="user_123",
+                snapshot_id="snapshot_123",
+                snapshot_repository=mock_repo,
+                clear_existing=True
+            )
+            
+            assert result["success"] is True
+            assert result["restored_count"] == 1
+            assert result["total_in_snapshot"] == 1
+            assert len(result["errors"]) == 0
+        
+        with allure.step("Test restore with wrong user ID"):
+            mock_repo.find_by_id.return_value = {**mock_snapshot, "user_id": "wrong_user"}
+            
+            result = await client_wrapper.restore_from_mongodb(
+                user_id="user_123",
+                snapshot_id="snapshot_123",
+                snapshot_repository=mock_repo
+            )
+            
+            assert result["success"] is False
+            assert result["error"] == "User ID mismatch"
+    
+    @allure.story("Enhanced Convenience Functions")
+    @allure.severity(allure.severity_level.NORMAL)
+    async def test_enhanced_convenience_functions(self):
+        """Test enhanced convenience functions with categorization."""
+        with allure.step("Test add_conversation_memory with category"):
+            with patch('app.mem0.mem0AsyncClient.get_mem0_client') as mock_get_client:
+                mock_client = AsyncMock()
+                mock_client.add_memory.return_value = {"id": "mem_123"}
+                mock_get_client.return_value = mock_client
+                
+                result = await add_conversation_memory(
+                    user_message="I need this by end of month",
+                    assistant_message="End of month timeline noted",
+                    user_id="user_123",
+                    category=MemoryCategory.QUALIFICATION,
+                    importance_score=7.5
+                )
+                
+                assert result == {"id": "mem_123"}
+                mock_client.add_memory.assert_called_once()
+                call_args = mock_client.add_memory.call_args
+                assert call_args.kwargs["category"] == MemoryCategory.QUALIFICATION
+                assert call_args.kwargs["importance_score"] == 7.5
+        
+        with allure.step("Test search_user_memories with filters"):
+            with patch('app.mem0.mem0AsyncClient.get_mem0_client') as mock_get_client:
+                mock_client = AsyncMock()
+                mock_result = MemorySearchResult(memories=[], total_count=0, query="test")
+                mock_client.search_memories.return_value = mock_result
+                mock_get_client.return_value = mock_client
+                
+                result = await search_user_memories(
+                    query="budget",
+                    user_id="user_123",
+                    limit=5,
+                    category=MemoryCategory.QUALIFICATION,
+                    min_importance_score=5.0
+                )
+                
+                assert result == mock_result
+                mock_client.search_memories.assert_called_once_with(
+                    "budget", "user_123", 5, None,
+                    MemoryCategory.QUALIFICATION, 5.0
+                ) 
